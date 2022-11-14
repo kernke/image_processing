@@ -1,7 +1,9 @@
 # image-processing
  
  stitching images on a grid
+ 
  stack aligning
+ 
  line detection
  
 # Installation
