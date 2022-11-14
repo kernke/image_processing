@@ -3,4 +3,6 @@
 @author: kernke
 """
 
-from .image_procesiing import *
+from .general_functions import *
+from .line_analysis import *
+from .stitching_aligning import *
