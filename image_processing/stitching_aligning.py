@@ -339,7 +339,6 @@ def absolute_stitching_positions(positions,neighbours,tile_dimensions,pos_pcms,c
     return absolute_positions.astype(int)
 
 
-
 #%%
 def contrast_correction(images_c):
     #normalize the brightness of all pictures in the series, by multiplying each image
@@ -461,125 +460,6 @@ def drift_correction(images,tile_dimensions,overlap_rows_cols,tolerance=0.1):
     return drifts,alldrifts_right, alldrifts_down
 
 
-#%%
-"""
-def drift_correction(images,tile_dimensions,overlap_rows_cols,tolerance=0.1,ignore_montage_edges=0):
-    #images: list of images as a series of rows from top to bottom and within the row from left to right
-    #tile_dimensions: tuple consisting of first number of rows and second number of columns
-    #overlap: tuple of values between 0.0 and 1.0 indicating the expected relative overlap of pictures
-    #tolerance: relative allowed deviation from the expected overlap
-    #note: all images should have the same resolution
-    
-    imdim=images[0].shape
-
-    overlap_limits=np.zeros([2,2])
-    overlap_limits[0,0]=imdim[0]*(overlap_rows_cols[0]-tolerance)
-    overlap_limits[0,1]=imdim[0]*(overlap_rows_cols[0]+tolerance)
-    overlap_limits[1,0]=imdim[1]*(overlap_rows_cols[1]-tolerance)
-    overlap_limits[1,1]=imdim[1]*(overlap_rows_cols[1]+tolerance)
-    
-    mask_edgeright=np.ones(imdim)
-    mask_edgeup=np.ones(imdim)
-    if ignore_montage_edges!=0:
-        mask_edgeright[:,-int(ignore_montage_edges*imdim[1]):]=0
-        mask_edgeup[:int(ignore_montage_edges*imdim[0]),:]=0
-    
-    
-    #mask areas far from the overlap, to ensure that even if the side opposite to the stitching edge
-    #looks similar, the stitching happens on the right side of the image  
-    maskleft=np.ones(imdim)
-    maskright=np.ones(imdim)
-    maskup=np.ones(imdim)
-    maskdown=np.ones(imdim)
-    maskup[:int(imdim[0]-2*overlap_rows_cols[0]*imdim[0]),:]=0
-    maskdown[int(2*overlap_rows_cols[0]*imdim[0]):,:]=0
-    maskleft[:,:int(imdim[1]-2*overlap_rows_cols[1]*imdim[1])]=0
-    maskright[:,int(2*overlap_rows_cols[1]*imdim[1]):]=0
-    
-    positions=np.zeros([tile_dimensions[0]*tile_dimensions[1],tile_dimensions[0]*tile_dimensions[1],2])
-    pos_pcms=np.zeros([tile_dimensions[0]*tile_dimensions[1],tile_dimensions[0]*tile_dimensions[1]])
-
-    #loop checks for each image the relative position of its right and bottom neighour 
-    #via the maximum of the phase-correlation-matrix (PCM)
-    for i in range(len(images)-1):
-
-        if (i+1)%tile_dimensions[1]==0: #no right neighbour at the end of a row
-            #if i%tile_dimensions[1]==0:
-            if i<(tile_dimensions[0]-1)*tile_dimensions[1]: #no bottom neighbours in the last row 
-                j=i+tile_dimensions[1] #j is the image below
-                if j<len(images):
-                    pcm=phase_correlation(images[i]*maskup*mask_edgeright,images[j]*maskdown*mask_edgeright)
-
-                    dist0,dist1,pcms=pos_from_pcm(pcm,overlap_limits,'vertical',tolerance,imdim,0,0)
-                    positions[i,j]=dist0,dist1
-                    positions[j,i]=dist0,dist1
-                    pos_pcms[i,j]=pcms
-                    pos_pcms[j,i]=pcms
-                
-        else:
-            j=i+1 #j is the image right
-            if j<len(images):
-                if i < tile_dimensions[1]:
-                    pcm=phase_correlation(images[i]*maskleft*mask_edgeup,images[j]*maskright*mask_edgeup)                
-                else:
-                    pcm=phase_correlation(images[i]*maskleft,images[j]*maskright)
-                dist0,dist1,pcms=pos_from_pcm(pcm,overlap_limits,'horizontal',tolerance,imdim,0,0)
-                positions[i,j]=dist0,dist1
-                positions[j,i]=dist0,dist1
-                pos_pcms[i,j]=pcms
-                pos_pcms[j,i]=pcms
-            
-            if i<(tile_dimensions[0]-1)*tile_dimensions[1]:
-                j=i+tile_dimensions[1] #j is the image below
-                if j<len(images):
-                    pcm=phase_correlation(images[i]*maskup,images[j]*maskdown)                
-
-                    dist0,dist1,pcms=pos_from_pcm(pcm,overlap_limits,'vertical',tolerance,imdim,0,0)
-                    positions[i,j]=dist0,dist1
-                    positions[j,i]=dist0,dist1
-                    pos_pcms[i,j]=pcms
-                    pos_pcms[j,i]=pcms
-
-     
-    rightmoves=np.diag(pos_pcms,1)
-    downmoves=np.diag(pos_pcms,tile_dimensions[1])
-    right0=np.argmax(rightmoves)
-    down0=np.argmax(downmoves)
-    right1=right0+1
-    down1=down0+tile_dimensions[1]
-    
-    drift_down,drift_right=np.zeros(2),np.zeros(2)
-    
-    expected_row_pos=imdim[0]-imdim[0]*overlap_rows_cols[0]
-    drift_down[0]=positions[down0,down1,0]-expected_row_pos
-    drift_down[1]=positions[down0,down1,1]
-
-    
-    expected_col_pos=imdim[1]-imdim[1]*overlap_rows_cols[1]
-    drift_right[0]=positions[right0,right1,0]
-    drift_right[1]=positions[right0,right1,1]-expected_col_pos
-    
-    drifts=[]
-    drifts.append(drift_right)
-    drifts.append(drift_down)
-    
-    alldrifts_right=[]
-    alldrifts_down=[]
-    for i in range(len(rightmoves)):
-        if rightmoves[i]==0:
-            pass
-        else:
-            adr0=positions[i,i+1,0]
-            adr1=positions[i,i+1,1]-expected_col_pos        
-            alldrifts_right.append([adr0,adr1])
-    for i in range(len(downmoves)):
-        add0=positions[i,i+tile_dimensions[1],0]-expected_row_pos
-        add1=positions[i,i+tile_dimensions[1],1]
-        alldrifts_down.append([add0,add1])
-            
-    
-    return drifts,alldrifts_right, alldrifts_down
-"""
 #%%
 def stitch_grid(images,absolute_positions,tile_dimensions,mask):
     #to ensure a smooth transition between two pictures, a weighted sum in the overlap-region is executed
