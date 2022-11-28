@@ -6,7 +6,7 @@
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
-from general_functions import *
+from .general_functions import *
 
 #%% obtain snr  for optimal rotation
 

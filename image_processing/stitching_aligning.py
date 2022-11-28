@@ -2,12 +2,23 @@
 """
 @author: kernke
 """
-from scipy.fftpack import fftn, ifftn
+#from scipy.fftpack import fftn, ifftn
 import numpy as np
 import cv2
+import matplotlib.pyplot as plt
 
-def phase_correlation(im1,im2):
-    return (ifftn(fftn(im1)*ifftn(im2))).real
+#def phase_correlation(im1,im2):
+#    return (ifftn(fftn(im1)*ifftn(im2))).real
+
+def phase_correlation(a, b):
+    G_a = np.fft.fft2(a)
+    G_b = np.fft.fft2(b)
+    conj_b = np.ma.conjugate(G_b)
+    R = G_a*conj_b
+    R /= np.absolute(R)
+    r = np.fft.ifft2(R).real
+    return r
+
 
 def pos_from_pcm_short(roipcm):
 
@@ -275,8 +286,9 @@ def absolute_stitching_positions(positions,neighbours,tile_dimensions,pos_pcms,c
     #in case of non-matching relative image-positions resulting from different neighbours
     #the average of the conflicting values is taken
     
-    pos_pcms-=np.min(pos_pcms)-1
-    #print(np.min(pos_pcms))
+    pos_pcms-=np.min(pos_pcms)
+    pos_pcms += 0.000001
+
     
     absolute_positions=np.zeros([tile_dimensions[0],tile_dimensions[1],2])
     weights=np.zeros([tile_dimensions[0],tile_dimensions[1],2])
@@ -294,19 +306,19 @@ def absolute_stitching_positions(positions,neighbours,tile_dimensions,pos_pcms,c
                 break
             
             if conflict_sol=='weighted':
-                if sum(absolute_positions[row1,column1])==0:
-                    average_division=1
+                if np.sum(absolute_positions[row0,column0])==0:
                     absolute_positions[row1,column1,0]+=(absolute_positions[row0,column0,0]+positions[i,j,0])
                     absolute_positions[row1,column1,1]+=(absolute_positions[row0,column0,1]+positions[i,j,1])
-                    weights[row1,column1,0]+=pos_pcms[row0,column0]
-                    weights[row1,column1,1]+=pos_pcms[row0,column0]                
-
-                else:
-                    absolute_positions[row1,column1,0]+=(absolute_positions[row0,column0,0]+positions[i,j,0])*pos_pcms[row0,column0]
-                    absolute_positions[row1,column1,1]+=(absolute_positions[row0,column0,1]+positions[i,j,1])*pos_pcms[row0,column0]
-                    weights[row1,column1,0]+=pos_pcms[row0,column0]
-                    weights[row1,column1,1]+=pos_pcms[row0,column0]
-                    absolute_positions[row1,column1] /= weights[row1,column1,0]  
+                    weights[row1,column1,0]+=pos_pcms[i,j]
+                    weights[row1,column1,1]+=pos_pcms[i,j]
+                else:                 
+                    absolute_positions[row1,column1,0]=(absolute_positions[row1,column1,0]*weights[row1,column1,0]
+                        +(absolute_positions[row0,column0,0]+positions[i,j,0])*pos_pcms[i,j])
+                    absolute_positions[row1,column1,1]=(absolute_positions[row1,column1,1]*weights[row1,column1,1]
+                        +(absolute_positions[row0,column0,1]+positions[i,j,1])*pos_pcms[i,j])
+                    weights[row1,column1,0]+=pos_pcms[i,j]
+                    weights[row1,column1,1]+=pos_pcms[i,j]
+                    absolute_positions[row1,column1] /=weights[row1,column1]
                     
             else:    
                 if sum(absolute_positions[row1,column1])==0:
@@ -318,18 +330,14 @@ def absolute_stitching_positions(positions,neighbours,tile_dimensions,pos_pcms,c
                 absolute_positions[row1,column1,1]+=absolute_positions[row0,column0,1]+positions[i,j,1]
 
                 absolute_positions[row1,column1] /= average_division
-    
-    #if conflict_sol=='weighted':
-    #    print(weights)
-    #    print(absolute_positions)
-    #    weights[weights==0]=1
-    #    absolute_positions/=weights
+        
     
     #shift to have only positive positions
     absolute_positions[:,:,0]-=np.min(absolute_positions[:,:,0])
     absolute_positions[:,:,1]-=np.min(absolute_positions[:,:,1])
 
     return absolute_positions.astype(int)
+
 
 
 #%%
@@ -353,6 +361,108 @@ def contrast_correction(images_c):
     return images_cc
 
 #%%
+def drift_correction(images,tile_dimensions,overlap_rows_cols,tolerance=0.1):
+    #images: list of images as a series of rows from top to bottom and within the row from left to right
+    #tile_dimensions: tuple consisting of first number of rows and second number of columns
+    #overlap: tuple of values between 0.0 and 1.0 indicating the expected relative overlap of pictures
+    #tolerance: relative allowed deviation from the expected overlap
+    #note: all images should have the same resolution
+    
+    imdim=images[0].shape
+
+    overlap_limits=np.zeros([2,2])
+    overlap_limits[0,0]=imdim[0]*(overlap_rows_cols[0]-tolerance)
+    overlap_limits[0,1]=imdim[0]*(overlap_rows_cols[0]+tolerance)
+    overlap_limits[1,0]=imdim[1]*(overlap_rows_cols[1]-tolerance)
+    overlap_limits[1,1]=imdim[1]*(overlap_rows_cols[1]+tolerance)
+    
+    
+    positions=np.zeros([tile_dimensions[0]*tile_dimensions[1],tile_dimensions[0]*tile_dimensions[1],2])
+    pos_pcms=np.zeros([tile_dimensions[0]*tile_dimensions[1],tile_dimensions[0]*tile_dimensions[1]])
+
+    #loop checks for each image the relative position of its right and bottom neighour 
+    #via the maximum of the phase-correlation-matrix (PCM)
+    for i in range(len(images)-1):
+
+        if (i+1)%tile_dimensions[1]==0: #no right neighbour at the end of a row
+            #if i%tile_dimensions[1]==0:
+            if i<(tile_dimensions[0]-1)*tile_dimensions[1]: #no bottom neighbours in the last row 
+                j=i+tile_dimensions[1] #j is the image below
+                if j<len(images):
+                    pcm=phase_correlation(images[i],images[j])
+
+                    dist0,dist1,pcms=pos_from_pcm(pcm,overlap_limits,'vertical',tolerance,imdim,0,0)
+                    positions[i,j]=dist0,dist1
+                    positions[j,i]=dist0,dist1
+                    pos_pcms[i,j]=pcms
+                    pos_pcms[j,i]=pcms
+                
+        else:
+            j=i+1 #j is the image right
+            if j<len(images):
+                if i < tile_dimensions[1]:
+                    pcm=phase_correlation(images[i],images[j])                
+                else:
+                    pcm=phase_correlation(images[i],images[j])
+                dist0,dist1,pcms=pos_from_pcm(pcm,overlap_limits,'horizontal',tolerance,imdim,0,0)
+                positions[i,j]=dist0,dist1
+                positions[j,i]=dist0,dist1
+                pos_pcms[i,j]=pcms
+                pos_pcms[j,i]=pcms
+            
+            if i<(tile_dimensions[0]-1)*tile_dimensions[1]:
+                j=i+tile_dimensions[1] #j is the image below
+                if j<len(images):
+                    pcm=phase_correlation(images[i],images[j])                
+
+                    dist0,dist1,pcms=pos_from_pcm(pcm,overlap_limits,'vertical',tolerance,imdim,0,0)
+                    positions[i,j]=dist0,dist1
+                    positions[j,i]=dist0,dist1
+                    pos_pcms[i,j]=pcms
+                    pos_pcms[j,i]=pcms
+
+     
+    rightmoves=np.diag(pos_pcms,1)
+    downmoves=np.diag(pos_pcms,tile_dimensions[1])
+    right0=np.argmax(rightmoves)
+    down0=np.argmax(downmoves)
+    right1=right0+1
+    down1=down0+tile_dimensions[1]
+    
+    drift_down,drift_right=np.zeros(2),np.zeros(2)
+    
+    expected_row_pos=imdim[0]-imdim[0]*overlap_rows_cols[0]
+    expected_col_pos=imdim[1]-imdim[1]*overlap_rows_cols[1]
+    drift_down[0]=positions[down0,down1,0]-expected_row_pos
+    drift_down[1]=positions[down0,down1,1]
+
+    drift_right[0]=positions[right0,right1,0]
+    drift_right[1]=positions[right0,right1,1]-expected_col_pos
+    
+    drifts=[]
+    drifts.append(drift_right)
+    drifts.append(drift_down)
+    
+    alldrifts_right=[]
+    alldrifts_down=[]
+    for i in range(len(rightmoves)):
+        if rightmoves[i]==0:
+            pass
+        else:
+            adr0=positions[i,i+1,0]
+            adr1=positions[i,i+1,1]-expected_row_pos        
+            alldrifts_right.append([adr0,adr1])
+    for i in range(len(downmoves)):
+        add0=positions[i,i+tile_dimensions[1],0]-expected_col_pos
+        add1=positions[i,i+tile_dimensions[1],1]
+        alldrifts_down.append([add0,add1])
+            
+    
+    return drifts,alldrifts_right, alldrifts_down
+
+
+#%%
+"""
 def drift_correction(images,tile_dimensions,overlap_rows_cols,tolerance=0.1,ignore_montage_edges=0):
     #images: list of images as a series of rows from top to bottom and within the row from left to right
     #tile_dimensions: tuple consisting of first number of rows and second number of columns
@@ -469,7 +579,7 @@ def drift_correction(images,tile_dimensions,overlap_rows_cols,tolerance=0.1,igno
             
     
     return drifts,alldrifts_right, alldrifts_down
-
+"""
 #%%
 def stitch_grid(images,absolute_positions,tile_dimensions,mask):
     #to ensure a smooth transition between two pictures, a weighted sum in the overlap-region is executed
@@ -521,3 +631,101 @@ def optimize_images(images,background_division='mask'):
         images_c = images_c.astype(np.uint8)    
 
     return images_c,immed,madnorm,mask
+
+
+#%%
+def two_imshow(images,absolute_positions,tile_dimensions,i,mask):
+    row=i//tile_dimensions[1]
+    column=i%tile_dimensions[1]
+    imshape=np.array(images[0].shape)
+
+    if i < tile_dimensions[1]: #first row
+        j=i-1
+        ims=[i,j]
+        positions=np.zeros([2,2],dtype=int)
+        positions[0]= absolute_positions[row,column]
+        positions[1]= absolute_positions[row,column-1]
+
+    else:
+        if i%tile_dimensions[1]==0: #first element of a row    
+            j=i-tile_dimensions[1]
+            ims=[i,j]
+            positions=np.zeros([2,2],dtype=int)
+            positions[0]= absolute_positions[row,column]
+            positions[1]= absolute_positions[row-1,column]                        
+        else:
+
+            j=i-tile_dimensions[1]
+            k=i-1
+            m=j-1
+            ims=[i,j,k,m]
+            positions=np.zeros([4,2],dtype=int)
+            positions[0]= absolute_positions[row,column]
+            positions[1]= absolute_positions[row-1,column]
+            positions[2]= absolute_positions[row,column-1]
+            positions[3]= absolute_positions[row-1,column-1]
+
+    offset=np.min(positions,axis=0)
+    for a in range(len(positions)):
+        positions[a] -= offset
+    offsetsize=np.max(positions,axis=0)
+    canv=np.zeros(imshape+offsetsize)
+    canvmask=np.zeros(imshape+offsetsize)
+    for a in range(len(positions)):
+        canv[positions[a,0]:positions[a,0]+imshape[0],positions[a,1]:positions[a,1]+imshape[1]]+=images[ims[a]]
+        canvmask[positions[a,0]:positions[a,0]+imshape[0],positions[a,1]:positions[a,1]+imshape[1]]+=mask
+
+    canvmask[canvmask==0]=1
+    return canv/canvmask,positions[0]  
+
+image_counter=0
+def manual_correction(images,absolute_positions,tile_dimensions,mask):
+
+    # functions
+    def press(event):
+        global image_counter
+        row=image_counter//tile_dimensions[1]
+        column=image_counter%tile_dimensions[1]
+        if event.key == 'enter':      
+            image_counter +=1
+            if image_counter==len(images):
+                plt.close()
+                absolute_positions[:,:,0]-=np.min(absolute_positions[:,:,0])
+                absolute_positions[:,:,1]-=np.min(absolute_positions[:,:,1])
+                image_counter=0
+                return 0
+        if event.key == "left":
+            absolute_positions[row,column,1] +=-1        
+        if event.key == "right":
+            absolute_positions[row,column,1] +=1
+        if event.key == "up":
+            absolute_positions[row,column,0] +=-1
+        if event.key == "down":
+            absolute_positions[row,column,0] +=1
+
+        pic,pos=two_imshow(images,absolute_positions,tile_dimensions,image_counter,mask)
+        imshape=images[0].shape
+        ax.cla()
+        ax.imshow(pic,cmap='gray')
+        ax.set_title("image "+str(image_counter)+"   in row "+str(row)+"  and column "+str(column))
+        xs=[pos[0],pos[0],pos[0]+imshape[0],pos[0]+imshape[0]]
+        ys=[pos[1],pos[1]+imshape[1],pos[1],pos[1]+imshape[1]]
+        ax.plot(ys,xs,'+',c='r',markersize=15)
+        plt.gcf().canvas.draw()      
+        
+        if event.key == "escape":
+            plt.close()
+            image_counter=0
+
+            
+    # start program
+    fig, ax = plt.subplots()
+    fig.canvas.mpl_connect('key_press_event', press)
+
+    ax.plot([0,1],[0,1],c='w')
+    ax.text(0.3,0.8,'Image Stitching')
+    ax.text(0.1,0.5,'Manual Adjustment of Images:\nUse Arrow keys to move the picture marked by red +\nPress Enter to go to the next image')
+    ax.text(0.1,0.2,'Start the programm by pressing Enter')
+    ax.text(0.1,0.1,'Pressing Enter after the last image, will close and save')
+    plt.show()
+    
